@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>우주 로켓 생존 게임</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #050817; color: #fff; font-family: system-ui, -apple-system, "Malgun Gothic", sans-serif; }
+  body { display: grid; place-items: center; }
+  #game-wrap { position: relative; width: min(100vw, 900px); height: min(100vh, 650px); min-height: 420px; background: #070d25; overflow: hidden; border: 1px solid #26365f; box-shadow: 0 0 40px #152b66aa; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #hud { position: absolute; inset: 14px 16px auto; display: flex; justify-content: space-between; align-items: flex-start; pointer-events: none; font-weight: 800; text-shadow: 0 2px 8px #000; }
+  .panel { background: #08152bcc; border: 1px solid #5d78b966; border-radius: 12px; padding: 9px 13px; backdrop-filter: blur(5px); }
+  #hearts { color: #ff617e; letter-spacing: 3px; font-size: 20px; }
+  #score { color: #8cecff; }
+  #overlay { position: absolute; inset: 0; display: grid; place-items: center; background: #030817b8; text-align: center; padding: 24px; }
+  #card { max-width: 460px; width: 100%; padding: 30px 24px; border: 1px solid #6a8dff88; border-radius: 22px; background: linear-gradient(145deg, #101d43ee, #091128f2); box-shadow: 0 0 50px #365dff33; }
+  h1 { margin: 0 0 10px; font-size: clamp(27px, 5vw, 40px); }
+  #message { color: #c6d5ff; line-height: 1.7; margin: 12px 0 22px; }
+  #menu-rocket { font-size: 76px; line-height: 1.4; margin: 8px 0 12px; filter: drop-shadow(0 0 18px #70dfff); }
+  #result-time { color: #8cecff; font-size: 25px; font-weight: 900; margin: 8px 0 4px; }
+  .actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 10px; }
+  button { border: 0; border-radius: 999px; padding: 13px 30px; color: #071126; background: linear-gradient(90deg, #73e7ff, #9b9aff); font-size: 17px; font-weight: 900; cursor: pointer; box-shadow: 0 6px 22px #5f9eff55; }
+  button.secondary { color: #e6edff; background: #26375f; border: 1px solid #7188c4; box-shadow: none; }
+  button:hover { filter: brightness(1.1); transform: translateY(-1px); }
+  #help { position: absolute; bottom: 12px; left: 0; right: 0; text-align: center; color: #b5c5e8; font-size: 12px; pointer-events: none; text-shadow: 0 1px 5px #000; }
+  @media (max-width: 560px) { #game-wrap { width: 100vw; height: 100vh; border: 0; } #hud { inset: 10px 10px auto; } .panel { padding: 7px 10px; } }
+</style>
+</head>
+<body>
+<div id="game-wrap">
+  <canvas id="game"></canvas>
+  <div id="hud">
+    <div class="panel">체력 <span id="hearts">♥ ♥ ♥</span></div>
+    <div class="panel">점수 <span id="score">0</span></div>
+  </div>
+  <div id="overlay">
+    <div id="card">
+      <div id="menu-rocket">🚀</div>
+      <h1 id="title">우주 생존 작전</h1>
+      <div id="message">끝없이 펼쳐진 우주에서 살아남으세요!<br>운석은 피하고, 배터리를 모아 체력을 회복하세요.<br><br><b>조작:</b> 방향키 또는 WASD</div>
+      <div id="result-time" hidden></div>
+      <div class="actions" id="actions">
+        <button id="start">게임 시작</button>
+      </div>
+    </div>
+  </div>
+  <div id="help">이동: 방향키 / WASD　 ·　 모바일: 화면을 누른 채 드래그</div>
+</div>
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const wrap = document.getElementById('game-wrap');
+  const overlay = document.getElementById('overlay');
+  const titleEl = document.getElementById('title');
+  const messageEl = document.getElementById('message');
+  const startBtn = document.getElementById('start');
+  const actionsEl = document.getElementById('actions');
+  const menuRocket = document.getElementById('menu-rocket');
+  const resultTimeEl = document.getElementById('result-time');
+  const heartsEl = document.getElementById('hearts');
+  const scoreEl = document.getElementById('score');
+
+  let W = 900, H = 650, running = false, last = 0, score = 0, health = 3, elapsed = 0;
+  let player, asteroids = [], batteries = [], stars = [], keys = {};
+  let asteroidTimer = 0, batteryTimer = 0, invincible = 0, animationId = 0;
+  let pointerDown = false, pointerX = 0, pointerY = 0;
+
+  function resize() {
+    const rect = wrap.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = rect.width; H = rect.height;
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    if (player) {
+      player.x = Math.min(W - player.r, Math.max(player.r, player.x));
+      player.y = Math.min(H - player.r, Math.max(player.r, player.y));
+    }
+    if (!stars.length) makeStars();
+  }
+  function makeStars() {
+    stars = Array.from({length: Math.floor(W * H / 4200)}, () => ({
+      x: Math.random()*W, y: Math.random()*H, r: Math.random()*1.6+.3,
+      speed: Math.random()*25+10, alpha: Math.random()*.65+.25
+    }));
+  }
+  function reset() {
+    score = 0; health = 3; elapsed = 0; asteroids = []; batteries = [];
+    asteroidTimer = 0; batteryTimer = 2; invincible = 0;
+    player = {x: W*.5, y: H*.78, r: 18, speed: 310};
+    updateHud();
+  }
+  function updateHud() {
+    heartsEl.textContent = Array.from({length:3}, (_,i) => i < health ? '♥' : '♡').join(' ');
+    scoreEl.textContent = Math.floor(score);
+  }
+  function spawnAsteroid() {
+    const r = 15 + Math.random()*19;
+    asteroids.push({x: r+Math.random()*(W-r*2), y: -r-5, r, speed: 170+Math.random()*110+score*.12, spin: Math.random()*6, rot: Math.random()*6, shape: Array.from({length:9},()=>.78+Math.random()*.42)});
+  }
+  function spawnBattery() {
+    batteries.push({x: 25+Math.random()*(W-50), y: -24, r: 14, speed: 135+Math.random()*35, pulse: 0});
+  }
+  function hit(a,b,pad=0) { return Math.hypot(a.x-b.x,a.y-b.y) < a.r+b.r-pad; }
+
+  function drawBackground(dt) {
+    const grad = ctx.createLinearGradient(0,0,0,H);
+    grad.addColorStop(0,'#070d25'); grad.addColorStop(1,'#111b42');
+    ctx.fillStyle = grad; ctx.fillRect(0,0,W,H);
+    for (const s of stars) {
+      s.y += s.speed*dt;
+      if (s.y > H) { s.y = 0; s.x = Math.random()*W; }
+      ctx.globalAlpha = s.alpha;
+      ctx.fillStyle = '#dceaff';
+      ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,Math.PI*2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    // 먼 우주 성운
+    const glow = ctx.createRadialGradient(W*.75,H*.25,5,W*.75,H*.25,W*.55);
+    glow.addColorStop(0,'#443b8b22'); glow.addColorStop(1,'#443b8b00');
+    ctx.fillStyle=glow; ctx.fillRect(0,0,W,H);
+  }
+  function drawRocket() {
+    ctx.save(); ctx.translate(player.x,player.y);
+    if (invincible > 0 && Math.floor(invincible*12)%2===0) ctx.globalAlpha=.35;
+    // 불꽃
+    const flame = 12 + Math.random()*9;
+    ctx.fillStyle='#ff9d42'; ctx.beginPath(); ctx.moveTo(-7,13); ctx.lineTo(0,13+flame); ctx.lineTo(7,13); ctx.closePath(); ctx.fill();
+    ctx.fillStyle='#fff2a6'; ctx.beginPath(); ctx.moveTo(-3,14); ctx.lineTo(0,14+flame*.65); ctx.lineTo(3,14); ctx.closePath(); ctx.fill();
+    // 로켓 몸체
+    ctx.fillStyle='#e8f4ff'; ctx.beginPath(); ctx.moveTo(0,-23); ctx.quadraticCurveTo(15,-8,12,12); ctx.lineTo(-12,12); ctx.quadraticCurveTo(-15,-8,0,-23); ctx.fill();
+    ctx.fillStyle='#62dfff'; ctx.beginPath(); ctx.ellipse(0,-3,5,7,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#ff637e';
+    ctx.beginPath(); ctx.moveTo(-11,5); ctx.lineTo(-22,17); ctx.lineTo(-9,14); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(11,5); ctx.lineTo(22,17); ctx.lineTo(9,14); ctx.fill();
+    ctx.restore();
+  }
+  function drawAsteroid(a) {
+    ctx.save(); ctx.translate(a.x,a.y); ctx.rotate(a.rot);
+    ctx.fillStyle='#8a91a9'; ctx.strokeStyle='#c2c9df'; ctx.lineWidth=2;
+    ctx.beginPath();
+    a.shape.forEach((v,i)=>{const ang=i/a.shape.length*Math.PI*2; const x=Math.cos(ang)*a.r*v,y=Math.sin(ang)*a.r*v; if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);});
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#646d89';
+    ctx.beginPath();ctx.arc(-a.r*.25,-a.r*.15,a.r*.2,0,Math.PI*2);ctx.fill();
+    ctx.beginPath();ctx.arc(a.r*.3,a.r*.28,a.r*.13,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+  }
+  function drawBattery(b) {
+    ctx.save();ctx.translate(b.x,b.y);ctx.shadowColor='#5dffb4';ctx.shadowBlur=18;
+    ctx.fillStyle='#42e6a0';ctx.strokeStyle='#d4ffeb';ctx.lineWidth=2;
+    ctx.beginPath();ctx.roundRect(-10,-14,20,28,5);ctx.fill();ctx.stroke();
+    ctx.fillRect(-4,-18,8,4);
+    ctx.shadowBlur=0;ctx.fillStyle='#075d49';ctx.beginPath();ctx.moveTo(2,-10);ctx.lineTo(-4,1);ctx.lineTo(1,1);ctx.lineTo(-2,10);ctx.lineTo(6,-2);ctx.lineTo(1,-2);ctx.closePath();ctx.fill();
+    ctx.restore();
+  }
+
+  function update(dt) {
+    elapsed += dt;
+    score += dt*10;
+    if (invincible>0) invincible=Math.max(0,invincible-dt);
+    let dx=0,dy=0;
+    if(keys.ArrowLeft||keys.a||keys.A)dx--;
+    if(keys.ArrowRight||keys.d||keys.D)dx++;
+    if(keys.ArrowUp||keys.w||keys.W)dy--;
+    if(keys.ArrowDown||keys.s||keys.S)dy++;
+    if(dx||dy){const len=Math.hypot(dx,dy);player.x+=dx/len*player.speed*dt;player.y+=dy/len*player.speed*dt;}
+    if(pointerDown){player.x += (pointerX-player.x)*Math.min(1,dt*12);player.y += (pointerY-player.y)*Math.min(1,dt*12);}
+    player.x=Math.max(25,Math.min(W-25,player.x));
+    player.y=Math.max(35,Math.min(H-30,player.y));
+
+    asteroidTimer-=dt;
+    if(asteroidTimer<=0){spawnAsteroid();asteroidTimer=Math.max(.22,.9-elapsed/95)+Math.random()*.25;}
+    batteryTimer-=dt;
+    if(batteryTimer<=0){if(health<3)spawnBattery();batteryTimer=8+Math.random()*6;}
+    asteroids.forEach(a=>{a.y+=a.speed*dt;a.rot+=dt*.8;});
+    batteries.forEach(b=>{b.y+=b.speed*dt;b.pulse+=dt*5;});
+    asteroids=asteroids.filter(a=>a.y<H+a.r+10);
+    batteries=batteries.filter(b=>b.y<H+30);
+
+    if(invincible<=0){
+      for(let i=asteroids.length-1;i>=0;i--){
+        if(hit(player,asteroids[i],5)){
+          asteroids.splice(i,1);health--;invincible=1.25;
+          if(health<=0){endGame();return;}
+          break;
+        }
+      }
+    }
+    for(let i=batteries.length-1;i>=0;i--){
+      if(hit(player,batteries[i],2)){
+        if(health<3){health++;batteries.splice(i,1);}
+        else batteries.splice(i,1);
+      }
+    }
+    updateHud();
+  }
+  function render(dt) {
+    drawBackground(dt);
+    batteries.forEach(drawBattery);
+    asteroids.forEach(drawAsteroid);
+    if(player)drawRocket();
+  }
+  function loop(t) {
+    if(!running)return;
+    const dt=Math.min((t-last)/1000||0,.035);last=t;
+    update(dt);render(dt);
+    if(running)animationId=requestAnimationFrame(loop);
+  }
+  function formatTime(seconds) {
+    const total = Math.floor(seconds);
+    const minutes = Math.floor(total / 60);
+    const secs = total % 60;
+    return `${String(minutes).padStart(2,'0')}:${String(secs).padStart(2,'0')}`;
+  }
+  function showMainMenu() {
+    running = false;
+    cancelAnimationFrame(animationId);
+    titleEl.textContent = '우주 생존 작전';
+    menuRocket.hidden = false;
+    messageEl.innerHTML = '끝없이 펼쳐진 우주에서 살아남으세요!<br>운석은 피하고, 배터리를 모아 체력을 회복하세요.<br><br><b>조작:</b> 방향키 또는 WASD';
+    resultTimeEl.hidden = true;
+    actionsEl.innerHTML = '<button id="start">게임 시작</button>';
+    document.getElementById('start').addEventListener('click', startGame);
+    overlay.style.display = 'grid';
+  }
+  function endGame() {
+    running=false;cancelAnimationFrame(animationId);
+    titleEl.textContent='💫 게임 오버!';
+    menuRocket.hidden = true;
+    messageEl.innerHTML = `최종 점수: <b>${Math.floor(score)}점</b>`;
+    resultTimeEl.hidden = false;
+    resultTimeEl.textContent = `생존 시간 ${formatTime(elapsed)}`;
+    actionsEl.innerHTML = '<button id="retry">게임 다시하기</button><button class="secondary" id="main-menu">메인화면으로 가기</button>';
+    document.getElementById('retry').addEventListener('click', startGame);
+    document.getElementById('main-menu').addEventListener('click', showMainMenu);
+    overlay.style.display='grid';
+  }
+  function startGame() {
+    reset();overlay.style.display='none';running=true;last=performance.now();
+    cancelAnimationFrame(animationId);animationId=requestAnimationFrame(loop);
+  }
+  startBtn.addEventListener('click',startGame);
+  window.addEventListener('keydown',e=>{
+    if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' '].includes(e.key))e.preventDefault();
+    keys[e.key]=true;
+  });
+  window.addEventListener('keyup',e=>keys[e.key]=false);
+  canvas.addEventListener('pointerdown',e=>{pointerDown=true;canvas.setPointerCapture(e.pointerId);setPointer(e);});
+  canvas.addEventListener('pointermove',e=>{if(pointerDown)setPointer(e);});
+  canvas.addEventListener('pointerup',()=>pointerDown=false);
+  canvas.addEventListener('pointercancel',()=>pointerDown=false);
+  function setPointer(e){const r=canvas.getBoundingClientRect();pointerX=e.clientX-r.left;pointerY=e.clientY-r.top;}
+  window.addEventListener('resize',resize);
+  resize();reset();render(0);
+  showMainMenu();
+})();
+</script>
+</body>
+</html>
